@@ -85,12 +85,33 @@ ensure_in_path() {
     fi
 }
 
+# Install a pipx package, skipping silently if it is already present.
+# Usage: pipx_install <venv-name> <install-source>
+#   venv-name      : name of the directory under ~/.local/share/pipx/venvs/
+#   install-source : argument passed to `pipx install` (PyPI name, git URL, local path)
+pipx_install() {
+    local venv_name="$1"
+    local install_src="$2"
+    local venv_dir="${HOME}/.local/share/pipx/venvs/${venv_name}"
+
+    if [ -d "$venv_dir" ]; then
+        echo "pipx: ${venv_name} already installed — skipping."
+        return 0
+    fi
+    pipx install "$install_src"
+}
+
 # ---------------------------------------------------------------------------
 # Individual installers (all use subshells so `cd` can never strand the script)
 # ---------------------------------------------------------------------------
 install_yaffshiv() {
     (
         cd /tmp
+        # Skip clone+install if pipx venv already exists
+        if [ -d "${HOME}/.local/share/pipx/venvs/yaffshiv" ]; then
+            echo "pipx: yaffshiv already installed — skipping."
+            return 0
+        fi
         rm -rf yaffshiv
         git clone --quiet --depth 1 --branch master https://github.com/devttys0/yaffshiv
         pipx install ./yaffshiv || echo "WARNING: yaffshiv install had issues"
@@ -164,14 +185,16 @@ install_cramfstools() {
         cd /tmp
         rm -rf cramfs-tools
         git clone --quiet --depth 1 --branch master https://github.com/npitre/cramfs-tools
-        (cd cramfs-tools && make && $SUDO install cramfsck /usr/local/bin/) \
+        # Suppress -Wunused-result warnings from the upstream source (harmless)
+        (cd cramfs-tools && make CFLAGS="-W -Wall -O2 -g -I. -Wno-unused-result" \
+            && $SUDO install cramfsck /usr/local/bin/) \
             || echo "WARNING: cramfstools build had issues"
         rm -rf cramfs-tools
     )
 }
 
 install_ubi_reader() {
-    pipx install git+https://github.com/onekey-sec/ubi_reader.git || {
+    pipx_install "ubi-reader" "git+https://github.com/onekey-sec/ubi_reader.git" || {
         echo "WARNING: ubi_reader pipx install had issues — trying pip fallback..."
         pip3 install git+https://github.com/onekey-sec/ubi_reader.git \
             --break-system-packages 2>/dev/null || true
@@ -184,7 +207,7 @@ install_ubi_reader() {
 }
 
 install_jefferson() {
-    pipx install jefferson || echo "WARNING: jefferson install had issues"
+    pipx_install "jefferson" "jefferson" || echo "WARNING: jefferson install had issues"
 
     if ! which jefferson > /dev/null 2>&1; then
         echo "jefferson not in PATH — creating symlinks..."
@@ -193,7 +216,7 @@ install_jefferson() {
 }
 
 install_uefi_firmware() {
-    pipx install uefi_firmware || {
+    pipx_install "uefi-firmware" "uefi_firmware" || {
         echo "WARNING: uefi_firmware pipx install had issues — trying pip fallback..."
         pip3 install uefi_firmware --break-system-packages 2>/dev/null || true
     }
@@ -205,7 +228,7 @@ install_uefi_firmware() {
 }
 
 install_vmlinux_to_elf() {
-    pipx install git+https://github.com/marin-m/vmlinux-to-elf.git || {
+    pipx_install "vmlinux-to-elf" "git+https://github.com/marin-m/vmlinux-to-elf.git" || {
         echo "WARNING: vmlinux-to-elf pipx install had issues — trying pip fallback..."
         pip3 install git+https://github.com/marin-m/vmlinux-to-elf.git \
             --break-system-packages 2>/dev/null || true
@@ -222,7 +245,8 @@ install_lzfse() {
         cd /tmp
         rm -rf lzfse
         git clone --quiet --depth 1 https://github.com/lzfse/lzfse.git
-        (cd lzfse && mkdir -p build && cd build && cmake .. && make && $SUDO make install) \
+        # -Wno-dev suppresses the cmake_minimum_required() dev warning in upstream CMakeLists
+        (cd lzfse && mkdir -p build && cd build && cmake -Wno-dev .. && make && $SUDO make install) \
             || echo "WARNING: lzfse build had issues"
         rm -rf lzfse
     )
@@ -236,6 +260,11 @@ install_dumpifs() {
         git clone --quiet --depth 1 https://github.com/ttepatti/dumpifs-linux.git
         cd dumpifs-linux
         rm -f dumpifs
+        # Upstream dumpifs-linux has many harmless pointer-sign and format-string
+        # warnings due to old C code written for 32-bit QNX.  We cannot fix the
+        # source, so silence them by injecting -w (suppress all warnings) into
+        # every clang/gcc invocation in the Makefile.
+        sed -i 's/^\(.*\bclang\b\)/\1 -w/g; s/^\(.*\bgcc\b\)/\1 -w/g' Makefile 2>/dev/null || true
         if make; then
             $SUDO cp ./dumpifs /usr/local/bin/dumpifs
             [ -f ./dumpifs-folderized.sh ] && $SUDO cp ./dumpifs-folderized.sh /usr/local/bin/
